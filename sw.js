@@ -1,6 +1,7 @@
 // Service worker: tiene in cache l'app per aprirla anche offline.
+// Prima prova la rete (così gli aggiornamenti arrivano subito), poi la cache.
 // I dati (Supabase) non vengono mai messi in cache qui.
-const V = 'tele-v1';
+const V = 'tele-v2';
 const SHELL = ['./', 'index.html', 'config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -16,11 +17,10 @@ self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (u.hostname.endsWith('supabase.co')) return;
   if (!(u.origin === location.origin || u.hostname === 'cdn.jsdelivr.net')) return;
-  e.respondWith(caches.match(e.request).then(cached => {
-    const net = fetch(e.request).then(r => {
+  e.respondWith(
+    fetch(e.request).then(r => {
       if (r && r.ok) { const cp = r.clone(); caches.open(V).then(c => c.put(e.request, cp)); }
       return r;
-    }).catch(() => cached);
-    return cached || net;
-  }));
+    }).catch(() => caches.match(e.request))
+  );
 });
