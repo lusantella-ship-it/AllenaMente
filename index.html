@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="it">
 <head>
@@ -278,40 +279,69 @@ async function delEsercizio(id, nome) {
 }
 
 /* ---- scheda Report ---- */
+let tutti = false;
 async function tabReport() {
-  const [pazienti, sess, acc] = await Promise.all([
+  const [pazienti, esercizi, sess, acc] = await Promise.all([
     sb.from('profiles').select('id,username').eq('ruolo', 'paziente').order('username').then(chk),
-    sb.from('sessioni').select('id,paziente_id,esercizio_id,report,creato,profiles(username),esercizi(nome)').order('creato', {ascending: false}).limit(500).then(chk),
+    sb.from('esercizi').select('id,nome').then(chk),
+    sb.from('sessioni').select('*').order('creato', {ascending: false}).limit(500).then(chk),
     sb.from('accessi').select('paziente_id,tipo,creato').order('creato', {ascending: false}).limit(5000).then(chk)
   ]);
+  const nomeP = id => (pazienti.find(p => p.id === id) || {}).username || '?';
+  const nomeE = id => (esercizi.find(e => e.id === id) || {}).nome || id;
+  sess.forEach(s => { s.user = nomeP(s.paziente_id); s.exnome = nomeE(s.esercizio_id); });
   window._sess = sess;
   const ss = sess.filter(s => !filtro || s.paziente_id === filtro);
   const riep = pazienti.filter(p => !filtro || p.id === filtro).map(p => {
     const a = acc.filter(x => x.paziente_id === p.id && x.tipo === 'login');
     return `<tr><td>${esc(p.username)}</td><td>${a.length}</td><td>${a.length ? fmt(a[0].creato) : '-'}</td><td>${sess.filter(s => s.paziente_id === p.id).length}</td></tr>`;
   }).join('');
+  const NOTI = ['esercizio', 'parametri', 'risultati', 'dettaglio', 'durataSec'];
+  const dettaglio = s => {
+    const r = s.report || {};
+    const altri = Object.keys(r).filter(k => NOTI.indexOf(k) < 0);
+    return `<tr><td colspan="5" style="background:#faf9f5">
+      <div class="mut"><b>Parametri</b></div><div>${chips(r.parametri) || '-'}</div>
+      <div class="mut" style="margin-top:8px"><b>Risultati</b></div><div>${chips(r.risultati) || '-'}</div>
+      ${altri.length ? `<div class="mut" style="margin-top:8px"><b>Altri dati</b></div><div>${chips(Object.fromEntries(altri.map(k => [k, r[k]])))}</div>` : ''}
+      ${Array.isArray(r.dettaglio) && r.dettaglio.length ? `<div class="mut" style="margin:8px 0 4px"><b>Dettaglio (${r.dettaglio.length} righe)</b></div>${tabella(r.dettaglio)}` : ''}
+    </td></tr>`;
+  };
   return `<div class="card"><div class="row"><select onchange="filtro=this.value;render()"><option value="">Tutti i pazienti</option>
     ${pazienti.map(p => `<option value="${p.id}" ${filtro === p.id ? 'selected' : ''}>${esc(p.username)}</option>`).join('')}</select>
-    <button class="sec" onclick="csv()">Esporta CSV</button></div></div>
+    <button class="sec" onclick="render()">Aggiorna</button>
+    <button class="sec" onclick="tutti=!tutti;aperti={};render()">${tutti ? 'Comprimi tutto' : 'Espandi tutto'}</button>
+    <button class="sec" onclick="csv()">Esporta riepilogo CSV</button>
+    <button class="sec" onclick="csvDett()">Esporta dettaglio CSV</button></div></div>
     <div class="card"><h2>Accessi</h2><div class="tw"><table><tr><th>Paziente</th><th>N. accessi</th><th>Ultimo accesso</th><th>Sedute svolte</th></tr>${riep || '<tr><td colspan=4 class="mut">Nessun dato</td></tr>'}</table></div></div>
-    <div class="card"><h2>Report sedute</h2><div class="tw"><table><tr><th>Data</th><th>Paziente</th><th>Esercizio</th><th>Risultati</th><th>Durata</th></tr>
+    <div class="card"><h2>Report sedute (${ss.length})</h2><p class="mut">Clicca su una riga per vedere tutti i dati della seduta.</p><div class="tw"><table><tr><th>Data</th><th>Paziente</th><th>Esercizio</th><th>Risultati</th><th>Durata</th></tr>
     ${ss.map(s => {
-      const r = s.report || {};
-      return `<tr class="clk" onclick="aperti['${s.id}']=!aperti['${s.id}'];render()"><td>${fmt(s.creato)}</td><td>${esc(s.profiles ? s.profiles.username : '?')}</td><td>${esc(s.esercizi ? s.esercizi.nome : s.esercizio_id)}</td>
-      <td>${chips(r.risultati)}</td><td>${r.durataSec != null ? esc(r.durataSec) + ' s' : ''}</td></tr>
-      ${aperti[s.id] ? `<tr><td colspan="5"><div class="mut">Parametri: ${chips(r.parametri) || '-'}</div>${tabella(r.dettaglio)}</td></tr>` : ''}`;
+      const r = s.report || {}, aperta = tutti || aperti[s.id];
+      return `<tr class="clk" onclick="aperti['${s.id}']=!aperti['${s.id}'];render()"><td>${aperta ? '&#9662; ' : '&#9656; '}${fmt(s.creato)}</td><td>${esc(s.user)}</td><td>${esc(s.exnome)}</td>
+      <td>${chips(r.risultati)}</td><td>${r.durataSec != null ? esc(r.durataSec) + ' s' : ''}</td></tr>${aperta ? dettaglio(s) : ''}`;
     }).join('') || '<tr><td colspan=5 class="mut">Nessuna seduta registrata</td></tr>'}</table></div></div>`;
+}
+function scarica(nome, rows) {
+  const cell = v => '"' + String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/"/g, '""') + '"';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(cell).join(';')).join('\n')], {type: 'text/csv'}));
+  a.download = nome; a.click();
 }
 function csv() {
   const ss = (window._sess || []).filter(s => !filtro || s.paziente_id === filtro);
   const keys = [...new Set(ss.flatMap(s => Object.keys((s.report && s.report.risultati) || {})))];
-  const cell = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   const rows = [['data', 'paziente', 'esercizio', ...keys, 'durata_s']];
   ss.forEach(s => { const r = s.report || {}, ri = r.risultati || {};
-    rows.push([new Date(s.creato).toISOString(), s.profiles ? s.profiles.username : '', s.esercizio_id, ...keys.map(k => ri[k]), r.durataSec]); });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(cell).join(';')).join('\n')], {type: 'text/csv'}));
-  a.download = 'report.csv'; a.click();
+    rows.push([new Date(s.creato).toISOString(), s.user, s.esercizio_id, ...keys.map(k => ri[k]), r.durataSec]); });
+  scarica('report_riepilogo.csv', rows);
+}
+function csvDett() {
+  const ss = (window._sess || []).filter(s => !filtro || s.paziente_id === filtro);
+  const keys = [...new Set(ss.flatMap(s => ((s.report && s.report.dettaglio) || []).flatMap(d => Object.keys(d))))];
+  const rows = [['data', 'paziente', 'esercizio', 'n', ...keys]];
+  ss.forEach(s => ((s.report && s.report.dettaglio) || []).forEach((d, i) =>
+    rows.push([new Date(s.creato).toISOString(), s.user, s.esercizio_id, i + 1, ...keys.map(k => d[k])])));
+  scarica('report_dettaglio.csv', rows);
 }
 
 /* ============ PAZIENTE ============ */
