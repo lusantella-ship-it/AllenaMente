@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#2f7d6d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Teleriabilitazione</title>
+<style>
+:root{--bg:#f6f4ef;--card:#fff;--ink:#1f2a37;--mut:#6b7280;--acc:#2f7d6d;--acc2:#e8f3f0;--bd:#e2ded4;--err:#b42318}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;background:var(--card);border-bottom:1px solid var(--bd)}
+header h1{font-size:18px;margin:0}
+main{max-width:1000px;margin:0 auto;padding:18px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:14px}
+h2{font-size:17px;margin:0 0 10px}
+input,select,textarea{font:inherit;padding:9px 11px;border:1px solid var(--bd);border-radius:10px;background:#fff;max-width:100%}
+textarea{width:100%;min-height:70px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+button{font:inherit;padding:9px 14px;border-radius:10px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button.sec{background:#fff;color:var(--acc)}
+button.del{background:#fff;color:var(--err);border-color:var(--err)}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.tabs button{background:#fff;color:var(--acc)}
+.tabs button.on{background:var(--acc);color:#fff}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.mut{color:var(--mut);font-size:14px}
+.err{color:var(--err);font-size:14px;min-height:20px}
+.cred{background:var(--acc2);border:1px dashed var(--acc);border-radius:10px;padding:10px;margin-bottom:12px}
+.warn{background:#fff7e6;border:1px solid #f0c36d;border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--bd);vertical-align:top}
+tr.clk{cursor:pointer}
+.tw{overflow-x:auto}
+.ex{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 0;border-top:1px solid var(--bd)}
+.ex input[type=number]{width:90px}
+.big{display:block;width:100%;text-align:left;font-size:22px;padding:22px;margin-bottom:12px;border-radius:18px}
+.login{max-width:360px;margin:12vh auto}
+.login input{width:100%;margin-bottom:10px}
+.badge{display:inline-block;background:var(--acc2);color:var(--acc);border-radius:99px;padding:2px 10px;font-size:13px;margin:1px 2px 1px 0}
+#ov{position:fixed;inset:0;background:#000;z-index:10;display:flex;flex-direction:column}
+#ov .bar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#111;color:#fff}
+#ov iframe{flex:1;border:0;width:100%;background:#fff}
+</style>
+</head>
+<body>
+<div id="app"><p style="padding:20px">Caricamento...</p></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const CFG = window.TELE_CONFIG || {};
+if (!CFG.url || !CFG.key || CFG.url.indexOf('INSERISCI') >= 0) {
+  document.getElementById('app').innerHTML = '<p style="padding:20px">Configura il file <b>config.js</b> con URL e chiave del tuo progetto Supabase (vedi GUIDA.md).</p>';
+  throw new Error('config mancante');
+}
+if (!window.supabase) {
+  document.getElementById('app').innerHTML = '<p style="padding:20px">Connessione assente: la prima apertura richiede internet.</p>';
+  throw new Error('supabase-js non caricato');
+}
+const sb = supabase.createClient(CFG.url, CFG.key);
+// client secondario: serve solo a creare l'account di un paziente senza far uscire il terapista
+const sb2 = supabase.createClient(CFG.url, CFG.key, {auth: {persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'tele-tmp'}});
+
+const EMAIL = u => u.trim().toLowerCase() + '@' + (CFG.domain || 'tele.local');
+const $app = document.getElementById('app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = t => new Date(t).toLocaleString('it-IT', {dateStyle: 'short', timeStyle: 'short'});
+const pw = () => { const c = 'abcdefghjkmnpqrstuvwxyz23456789', a = new Uint32Array(8); crypto.getRandomValues(a); return Array.from(a, x => c[x % c.length]).join(''); };
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+let me = null, tab = 'pazienti', filtro = '', aperti = {}, nuovo = null, loginErr = '', errMsg = '';
+let ifr = null, ctx = null, upHtml = '', editing = null;
+
+/* ============ AVVIO / LOGIN ============ */
+async function boot() {
+  try {
+    const {data: {session}} = await sb.auth.getSession();
+    if (session) await caricaProfilo(session.user);
+  } catch (e) {}
+  if (me) flush();
+  render();
+}
+async function caricaProfilo(user) {
+  try {
+    const {data, error} = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    if (error) throw error;
+    if (!data) { me = null; loginErr = 'Account non attivo'; await sb.auth.signOut(); return; }
+    me = data; lsSet('tele_me', data);
+  } catch (e) {
+    const c = lsGet('tele_me', null);   // offline: uso il profilo salvato
+    me = c && c.id === user.id ? c : null;
+  }
+}
+async function doLogin(ev) {
+  ev.preventDefault();
+  const u = document.getElementById('u').value, p = document.getElementById('p').value;
+  const btn = ev.target.querySelector('button'); btn.disabled = true;
+  const {data, error} = await sb.auth.signInWithPassword({email: EMAIL(u), password: p});
+  if (error) { loginErr = 'Credenziali non corrette'; btn.disabled = false; return render(); }
+  loginErr = '';
+  await caricaProfilo(data.user);
+  if (me && me.ruolo === 'paziente') { sb.from('accessi').insert({paziente_id: me.id, tipo: 'login'}).then(() => {}); flush(); }
+  render();
+}
+async function logout() {
+  await sb.auth.signOut();
+  me = null; localStorage.removeItem('tele_me'); render();
+}
+
+/* ============ RENDER ============ */
+function render() {
+  if (!me) return loginView();
+  me.ruolo === 'terapista' ? therapistView() : patientView();
+}
+function loginView() {
+  $app.innerHTML = `<div class="login card"><h2>Accedi</h2>
+  <form onsubmit="doLogin(event)"><input id="u" placeholder="Username" autocomplete="username" autocapitalize="none" required>
+  <input id="p" type="password" placeholder="Password" autocomplete="current-password" required>
+  <div class="err">${esc(loginErr)}</div><button style="width:100%">Entra</button></form></div>`;
+}
+function head(titolo) {
+  const pend = lsGet('tele_pending', []).filter(r => me && r.paziente_id === me.id).length;
+  return `<header><h1>${esc(titolo)}</h1><button class="sec" onclick="logout()">Esci</button></header>` +
+    (pend ? `<div class="warn" style="margin:12px 18px 0">Ci sono ${pend} risultati in attesa di invio: partiranno appena torna la connessione.</div>` : '');
+}
+function chips(o) { return Object.entries(o || {}).map(([k, v]) => `<span class="badge">${esc(k)}: ${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</span>`).join(' '); }
+function tabella(arr) {
+  if (!Array.isArray(arr) || !arr.length || typeof arr[0] !== 'object') return '';
+  const cols = Object.keys(arr[0]);
+  return `<div class="tw"><table><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr>` +
+    arr.map(r => `<tr>${cols.map(c => `<td>${esc(typeof r[c] === 'object' ? JSON.stringify(r[c]) : r[c])}</td>`).join('')}</tr>`).join('') + '</table></div>';
+}
+
+/* ============ TERAPISTA ============ */
+async function therapistView() {
+  let body = '';
+  try {
+    if (tab === 'pazienti') body = await tabPazienti();
+    else if (tab === 'esercizi') body = await tabEsercizi();
+    else body = await tabReport();
+  } catch (e) { body = `<div class="card err">Errore: ${esc(e.message || e)}</div>`; }
+  $app.innerHTML = head('Area terapista') + `<main>
+    <div class="tabs">
+    <button class="${tab === 'pazienti' ? 'on' : ''}" onclick="vai('pazienti')">Pazienti</button>
+    <button class="${tab === 'esercizi' ? 'on' : ''}" onclick="vai('esercizi')">Esercizi</button>
+    <button class="${tab === 'report' ? 'on' : ''}" onclick="vai('report')">Accessi e report</button></div>
+    ${errMsg ? `<div class="warn">${esc(errMsg)}</div>` : ''}${body}</main>`;
+  errMsg = '';
+}
+function vai(t) { tab = t; nuovo = null; editing = null; upHtml = ''; render(); }
+const chk = r => { if (r.error) throw r.error; return r.data; };
+
+async function tabPazienti() {
+  const [pazienti, esercizi, assegn] = await Promise.all([
+    sb.from('profiles').select('id,username').eq('ruolo', 'paziente').order('username').then(chk),
+    sb.from('esercizi').select('id,nome,params').order('nome').then(chk),
+    sb.from('assegnazioni').select('*').then(chk)
+  ]);
+  let h = `<div class="card"><h2>Nuovo paziente</h2><div class="row">
+    <input id="cod" placeholder="Codice paziente (es. P001)" autocapitalize="none"><button onclick="creaPaziente(this)">Crea e genera password</button></div>
+    <p class="mut">Usa un codice, non nome e cognome. Solo lettere, numeri, punto, trattino.</p></div>`;
+  if (nuovo) h += `<div class="cred">Credenziali da consegnare (la password non sarà più visibile): username <b>${esc(nuovo.user)}</b> &middot; password <b>${esc(nuovo.pass)}</b></div>`;
+  if (!esercizi.length) h += '<div class="warn">Non hai ancora caricato esercizi: vai nella scheda "Esercizi".</div>';
+  h += pazienti.map(p => `<div class="card"><div class="row" style="justify-content:space-between">
+    <b>${esc(p.username)}</b>
+    <span class="row"><button class="sec" onclick="resetPw('${p.id}','${esc(p.username)}')">Nuova password</button>
+    <button class="del" onclick="delPaziente('${p.id}','${esc(p.username)}')">Elimina</button></span></div>
+    ${esercizi.map(E => {
+      const a = assegn.find(z => z.paziente_id === p.id && z.esercizio_id === E.id);
+      return `<div class="ex"><label><input type="checkbox" ${a ? 'checked' : ''} onchange="toggleEx('${p.id}','${E.id}',this.checked)"> <b>${esc(E.nome)}</b></label>
+      ${a ? paramUI(E, a) : ''}
+      <button class="sec" onclick="prova('${E.id}','${p.id}')">Prova</button></div>`;
+    }).join('')}</div>`).join('') || '<p class="mut">Nessun paziente.</p>';
+  return h;
+}
+async function creaPaziente(btn) {
+  const c = document.getElementById('cod').value.trim().toLowerCase();
+  if (!/^[a-z0-9._-]{2,30}$/.test(c)) { errMsg = 'Codice non valido (2-30 caratteri: lettere, numeri, . _ -)'; return render(); }
+  btn.disabled = true;
+  const pass = pw();
+  let r = await sb.from('attesi').insert({username: c, ruolo: 'paziente'});
+  if (r.error) { errMsg = 'Codice già in uso o non consentito'; return render(); }
+  const s = await sb2.auth.signUp({email: EMAIL(c), password: pass});
+  if (s.error) {
+    await sb.from('attesi').delete().eq('username', c);
+    errMsg = 'Creazione non riuscita: ' + s.error.message; return render();
+  }
+  nuovo = {user: c, pass}; render();
+}
+async function resetPw(id, nome) {
+  if (!confirm('Generare una nuova password per ' + nome + '?')) return;
+  const pass = pw();
+  const {error} = await sb.rpc('reimposta_password', {p: id, nuova: pass});
+  if (error) { errMsg = 'Errore: ' + error.message; return render(); }
+  nuovo = {user: nome, pass}; render();
+}
+async function delPaziente(id, nome) {
+  if (!confirm('Eliminare ' + nome + ' e tutti i suoi dati (sedute e accessi)? Non si può annullare.')) return;
+  const {error} = await sb.rpc('elimina_paziente', {p: id});
+  if (error) errMsg = 'Errore: ' + error.message;
+  render();
+}
+function paramUI(E, a) {
+  return (E.params || []).map(q => {
+    if (q.type === 'config') {
+      const ok = a.params && a.params.cfg;
+      return `<span class="row"><button class="sec" onclick="configura('${E.id}','${a.paziente_id}')">${ok ? 'Modifica configurazione' : 'Configura'}</button>
+        <span class="badge" style="${ok ? '' : 'background:#fff7e6;color:#8a5a00'}">${ok ? 'configurato' : 'da configurare'}</span></span>`;
+    }
+    return `<label class="mut">${esc(q.label || q.k)} <input type="number" value="${esc(a.params[q.k] ?? q.def)}" onchange="setParam(${a.id},'${esc(q.k)}',this.value)"></label>`;
+  }).join('');
+}
+async function configura(ex, pid) {
+  const {data: E} = await sb.from('esercizi').select('id,nome').eq('id', ex).single();
+  const {data: a} = await sb.from('assegnazioni').select('params').eq('paziente_id', pid).eq('esercizio_id', ex).maybeSingle();
+  if (!a) { errMsg = 'Assegna prima l\'esercizio al paziente.'; return render(); }
+  lancia(ex, E.nome + ' - configurazione', a.params || {}, false, {config: true, pid});
+}
+async function salvaConfig(pid, ex, cfg) {
+  const {data: a} = await sb.from('assegnazioni').select('id,params').eq('paziente_id', pid).eq('esercizio_id', ex).maybeSingle();
+  if (!a) { errMsg = 'Assegnazione non trovata.'; return chiudi(); }
+  const params = Object.assign({}, a.params, {cfg});
+  const r = await sb.from('assegnazioni').update({params}).eq('id', a.id);
+  errMsg = r.error ? 'Errore: ' + r.error.message : 'Configurazione salvata.';
+  chiudi();
+}
+async function toggleEx(pid, ex, on) {
+  let r;
+  if (on) {
+    const {data} = await sb.from('esercizi').select('params').eq('id', ex).single();
+    const params = {}; ((data && data.params) || []).forEach(q => { if (q.k) params[q.k] = q.def; });
+    r = await sb.from('assegnazioni').insert({paziente_id: pid, esercizio_id: ex, params});
+  } else r = await sb.from('assegnazioni').delete().eq('paziente_id', pid).eq('esercizio_id', ex);
+  if (r.error) errMsg = 'Errore: ' + r.error.message;
+  render();
+}
+async function setParam(aid, k, v) {
+  const {data} = await sb.from('assegnazioni').select('params').eq('id', aid).single();
+  const params = Object.assign({}, data && data.params, {[k]: +v});
+  const r = await sb.from('assegnazioni').update({params}).eq('id', aid);
+  if (r.error) { errMsg = 'Errore: ' + r.error.message; render(); }
+}
+async function prova(ex, pid) {
+  const {data: E} = await sb.from('esercizi').select('id,nome,params').eq('id', ex).single();
+  let params = {};
+  (E.params || []).forEach(q => { if (q.k) params[q.k] = q.def; });
+  if (pid) {
+    const {data: a} = await sb.from('assegnazioni').select('params').eq('paziente_id', pid).eq('esercizio_id', ex).maybeSingle();
+    if (a) params = Object.assign(params, a.params);
+  }
+  lancia(ex, E.nome, params, false);
+}
+
+/* ---- scheda Esercizi ---- */
+function meta(h, n) {
+  const m = h.match(new RegExp('<meta[^>]+name=["\']' + n + '["\'][^>]*content=(?:\'([^\']*)\'|"([^"]*)")', 'i'));
+  return m ? (m[1] !== undefined ? m[1] : m[2]).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&') : '';
+}
+async function tabEsercizi() {
+  const lista = await sb.from('esercizi').select('id,nome,params,creato').order('nome').then(chk);
+  const ed = editing;
+  return `<div class="card"><h2>${ed ? 'Modifica parametri: ' + esc(ed.nome) : 'Carica un esercizio (file HTML)'}</h2>
+    <p class="mut">${ed ? 'Il file dell\'esercizio resta quello già caricato: qui cambi solo nome e parametri. Scegliendo un nuovo file lo sostituisci.' : 'Se il file contiene i tag <code>tele-nome</code> e <code>tele-params</code> i campi si compilano da soli. Con lo stesso ID, il file sostituisce quello esistente.'}</p>
+    <div class="row"><input type="file" id="f" accept=".html,.htm" onchange="leggiFile(this)"></div>
+    <div class="row" style="margin-top:10px"><input id="eid" placeholder="ID (es. tachistoscopia)" value="${esc(ed ? ed.id : '')}" ${ed ? 'readonly' : ''}><input id="enome" placeholder="Nome mostrato al paziente" style="min-width:240px" value="${esc(ed ? ed.nome : '')}"></div>
+    <p class="mut" style="margin-bottom:4px">Parametri che il terapista può scegliere per ogni paziente (JSON): <code>k</code> = nome interno, <code>label</code> = etichetta, <code>def</code> = valore iniziale.</p>
+    <textarea id="eparams" placeholder='[{"k":"ms","label":"Tempo iniziale (ms)","def":600}]'>${esc(ed ? JSON.stringify(ed.params || []) : '')}</textarea>
+    <div class="row" style="margin-top:10px"><button onclick="caricaEsercizio(this)">${ed ? 'Salva modifiche' : 'Carica'}</button>${ed ? '<button class="sec" onclick="editing=null;upHtml=\'\';render()">Annulla</button>' : ''}</div></div>
+    <div class="card"><h2>Esercizi caricati</h2>${lista.length ? '<table><tr><th>Nome</th><th>ID</th><th>Parametri</th><th></th></tr>' + lista.map(E => `<tr><td>${esc(E.nome)}</td><td>${esc(E.id)}</td>
+      <td>${(E.params || []).map(q => `<span class="badge">${esc(q.label || q.k)}</span>`).join('')}</td>
+      <td><button class="sec" onclick="prova('${E.id}')">Prova</button> <button class="sec" onclick="modificaEsercizio('${E.id}')">Modifica parametri</button> <button class="del" onclick="delEsercizio('${E.id}','${esc(E.nome)}')">Elimina</button></td></tr>`).join('') + '</table>' : '<p class="mut">Nessun esercizio.</p>'}</div>`;
+}
+async function leggiFile(inp) {
+  const f = inp.files[0]; if (!f) return;
+  upHtml = await f.text();
+  document.getElementById('eid').value = f.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  document.getElementById('enome').value = meta(upHtml, 'tele-nome') || f.name.replace(/\.[^.]+$/, '');
+  document.getElementById('eparams').value = meta(upHtml, 'tele-params');
+}
+async function caricaEsercizio(btn) {
+  const id = document.getElementById('eid').value.trim(), nome = document.getElementById('enome').value.trim();
+  const pt = document.getElementById('eparams').value.trim();
+  const soloMod = !upHtml && editing && editing.id === id;
+  if (!upHtml && !soloMod) { errMsg = 'Seleziona prima un file HTML'; return render(); }
+  if (!/^[a-z0-9_-]{2,40}$/.test(id)) { errMsg = 'ID non valido (minuscole, numeri, - o _)'; return render(); }
+  if (!nome) { errMsg = 'Inserisci un nome'; return render(); }
+  let params = [];
+  if (pt) { try { params = JSON.parse(pt); if (!Array.isArray(params)) throw 0; } catch (e) { errMsg = 'I parametri non sono un JSON valido (deve essere una lista)'; return render(); } }
+  btn.disabled = true;
+  const r = soloMod
+    ? await sb.from('esercizi').update({nome, params}).eq('id', id)
+    : await sb.from('esercizi').upsert({id, nome, html: upHtml, params});
+  upHtml = ''; editing = null;
+  errMsg = r.error ? 'Errore: ' + r.error.message : 'Esercizio "' + nome + '" caricato.';
+  render();
+}
+async function modificaEsercizio(id) {
+  const {data, error} = await sb.from('esercizi').select('id,nome,params').eq('id', id).single();
+  if (error) { errMsg = 'Errore: ' + error.message; return render(); }
+  editing = data; upHtml = ''; render(); window.scrollTo(0, 0);
+}
+async function delEsercizio(id, nome) {
+  if (!confirm('Eliminare "' + nome + '"? Verranno eliminate anche le assegnazioni e le sedute registrate con questo esercizio.')) return;
+  const r = await sb.from('esercizi').delete().eq('id', id);
+  if (r.error) errMsg = 'Errore: ' + r.error.message;
+  render();
+}
+
+/* ---- scheda Report ---- */
+let tutti = false;
+async function tabReport() {
+  const [pazienti, esercizi, sess, acc] = await Promise.all([
+    sb.from('profiles').select('id,username').eq('ruolo', 'paziente').order('username').then(chk),
+    sb.from('esercizi').select('id,nome').then(chk),
+    sb.from('sessioni').select('*').order('creato', {ascending: false}).limit(500).then(chk),
+    sb.from('accessi').select('paziente_id,tipo,creato').order('creato', {ascending: false}).limit(5000).then(chk)
+  ]);
+  const nomeP = id => (pazienti.find(p => p.id === id) || {}).username || '?';
+  const nomeE = id => (esercizi.find(e => e.id === id) || {}).nome || id;
+  sess.forEach(s => { s.user = nomeP(s.paziente_id); s.exnome = nomeE(s.esercizio_id); });
+  window._sess = sess;
+  const ss = sess.filter(s => !filtro || s.paziente_id === filtro);
+  const riep = pazienti.filter(p => !filtro || p.id === filtro).map(p => {
+    const a = acc.filter(x => x.paziente_id === p.id && x.tipo === 'login');
+    return `<tr><td>${esc(p.username)}</td><td>${a.length}</td><td>${a.length ? fmt(a[0].creato) : '-'}</td><td>${sess.filter(s => s.paziente_id === p.id).length}</td></tr>`;
+  }).join('');
+  const NOTI = ['esercizio', 'parametri', 'risultati', 'dettaglio', 'durataSec'];
+  const dettaglio = s => {
+    const r = s.report || {};
+    const altri = Object.keys(r).filter(k => NOTI.indexOf(k) < 0);
+    return `<tr><td colspan="5" style="background:#faf9f5">
+      <div class="mut"><b>Parametri</b></div><div>${chips(r.parametri) || '-'}</div>
+      <div class="mut" style="margin-top:8px"><b>Risultati</b></div><div>${chips(r.risultati) || '-'}</div>
+      ${altri.length ? `<div class="mut" style="margin-top:8px"><b>Altri dati</b></div><div>${chips(Object.fromEntries(altri.map(k => [k, r[k]])))}</div>` : ''}
+      ${Array.isArray(r.dettaglio) && r.dettaglio.length ? `<div class="mut" style="margin:8px 0 4px"><b>Dettaglio (${r.dettaglio.length} righe)</b></div>${tabella(r.dettaglio)}` : ''}
+    </td></tr>`;
+  };
+  return `<div class="card"><div class="row"><select onchange="filtro=this.value;render()"><option value="">Tutti i pazienti</option>
+    ${pazienti.map(p => `<option value="${p.id}" ${filtro === p.id ? 'selected' : ''}>${esc(p.username)}</option>`).join('')}</select>
+    <button class="sec" onclick="render()">Aggiorna</button>
+    <button class="sec" onclick="tutti=!tutti;aperti={};render()">${tutti ? 'Comprimi tutto' : 'Espandi tutto'}</button>
+    <button class="sec" onclick="csv()">Esporta riepilogo CSV</button>
+    <button class="sec" onclick="csvDett()">Esporta dettaglio CSV</button></div></div>
+    <div class="card"><h2>Accessi</h2><div class="tw"><table><tr><th>Paziente</th><th>N. accessi</th><th>Ultimo accesso</th><th>Sedute svolte</th></tr>${riep || '<tr><td colspan=4 class="mut">Nessun dato</td></tr>'}</table></div></div>
+    <div class="card"><h2>Report sedute (${ss.length})</h2><p class="mut">Clicca su una riga per vedere tutti i dati della seduta.</p><div class="tw"><table><tr><th>Data</th><th>Paziente</th><th>Esercizio</th><th>Risultati</th><th>Durata</th></tr>
+    ${ss.map(s => {
+      const r = s.report || {}, aperta = tutti || aperti[s.id];
+      return `<tr class="clk" onclick="aperti['${s.id}']=!aperti['${s.id}'];render()"><td>${aperta ? '&#9662; ' : '&#9656; '}${fmt(s.creato)}</td><td>${esc(s.user)}</td><td>${esc(s.exnome)}</td>
+      <td>${chips(r.risultati)}</td><td>${r.durataSec != null ? esc(r.durataSec) + ' s' : ''}</td></tr>${aperta ? dettaglio(s) : ''}`;
+    }).join('') || '<tr><td colspan=5 class="mut">Nessuna seduta registrata</td></tr>'}</table></div></div>`;
+}
+function scarica(nome, rows) {
+  const cell = v => '"' + String(v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/"/g, '""') + '"';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(cell).join(';')).join('\n')], {type: 'text/csv'}));
+  a.download = nome; a.click();
+}
+function csv() {
+  const ss = (window._sess || []).filter(s => !filtro || s.paziente_id === filtro);
+  const keys = [...new Set(ss.flatMap(s => Object.keys((s.report && s.report.risultati) || {})))];
+  const rows = [['data', 'paziente', 'esercizio', ...keys, 'durata_s']];
+  ss.forEach(s => { const r = s.report || {}, ri = r.risultati || {};
+    rows.push([new Date(s.creato).toISOString(), s.user, s.esercizio_id, ...keys.map(k => ri[k]), r.durataSec]); });
+  scarica('report_riepilogo.csv', rows);
+}
+function csvDett() {
+  const ss = (window._sess || []).filter(s => !filtro || s.paziente_id === filtro);
+  const keys = [...new Set(ss.flatMap(s => ((s.report && s.report.dettaglio) || []).flatMap(d => Object.keys(d))))];
+  const rows = [['data', 'paziente', 'esercizio', 'n', ...keys]];
+  ss.forEach(s => ((s.report && s.report.dettaglio) || []).forEach((d, i) =>
+    rows.push([new Date(s.creato).toISOString(), s.user, s.esercizio_id, i + 1, ...keys.map(k => d[k])])));
+  scarica('report_dettaglio.csv', rows);
+}
+
+/* ============ PAZIENTE ============ */
+async function patientView() {
+  let mie = lsGet('tele_assegn_' + me.id, []);
+  $app.innerHTML = head('Ciao ' + me.username + '!') + '<main><p class="mut">Caricamento...</p></main>';
+  try {
+    const {data, error} = await sb.from('assegnazioni').select('esercizio_id,params,esercizi(nome)').eq('paziente_id', me.id);
+    if (error) throw error;
+    mie = data; lsSet('tele_assegn_' + me.id, data);
+  } catch (e) {}
+  $app.innerHTML = head('Ciao ' + me.username + '!') + `<main>
+    ${errMsg ? `<div class="warn">${esc(errMsg)}</div>` : ''}
+    ${mie.map(a => `<button class="big" onclick="avvia('${a.esercizio_id}')">${esc(a.esercizi ? a.esercizi.nome : a.esercizio_id)}</button>`).join('') || '<p class="mut">Nessun esercizio assegnato.</p>'}</main>`;
+}
+async function avvia(ex) {
+  const mie = lsGet('tele_assegn_' + me.id, []);
+  const a = mie.find(z => z.esercizio_id === ex);
+  sb.from('accessi').insert({paziente_id: me.id, tipo: 'avvio:' + ex}).then(() => {});
+  lancia(ex, a && a.esercizi ? a.esercizi.nome : ex, a ? a.params : {}, true);
+}
+
+/* ============ ESECUZIONE ESERCIZIO ============ */
+async function getHtml(id) {
+  try {
+    const {data, error} = await sb.from('esercizi').select('html').eq('id', id).single();
+    if (error) throw error;
+    try { localStorage.setItem('exh_' + id, data.html); } catch (e) {}
+    return data.html;
+  } catch (e) { return localStorage.getItem('exh_' + id); }
+}
+async function lancia(ex, nome, params, registra, opt) {
+  opt = opt || {};
+  const html = await getHtml(ex);
+  if (!html) { errMsg = 'Esercizio non disponibile (serve la connessione la prima volta).'; return render(); }
+  ctx = {ex, registra, config: !!opt.config, pid: opt.pid};
+  const ov = document.createElement('div'); ov.id = 'ov';
+  ov.innerHTML = `<div class="bar"><span>${esc(nome)}${registra || opt.config ? '' : ' (anteprima, non registrata)'} <b id="ovmsg" style="margin-left:10px"></b></span><button class="sec" onclick="chiudi()">Esci</button></div>`;
+  ifr = document.createElement('iframe');
+  ifr.setAttribute('sandbox', 'allow-scripts allow-modals');
+  ifr.srcdoc = html;
+  ifr.onload = () => ifr.contentWindow.postMessage({type: 'init', mode: opt.config ? 'config' : 'run', params, user: me ? me.username : ''}, '*');
+  ov.appendChild(ifr); document.body.appendChild(ov);
+}
+function chiudi() { const o = document.getElementById('ov'); if (o) o.remove(); ifr = null; ctx = null; render(); }
+window.addEventListener('message', e => {
+  if (!ifr || e.source !== ifr.contentWindow || !e.data || !ctx) return;
+  if (e.data.type === 'config') { if (ctx.config) salvaConfig(ctx.pid, ctx.ex, e.data.config); return; }
+  if (e.data.type !== 'report') return;
+  if (ctx.registra && me && me.ruolo === 'paziente') {
+    const rep = Object.assign({}, e.data); delete rep.type;
+    salva(ctx.ex, rep);
+  } else {
+    const m = document.getElementById('ovmsg');
+    if (m) { m.style.color = '#ffd88a'; m.textContent = 'Non registrato (anteprima del terapista)'; }
+  }
+});
+async function salva(ex, rep) {
+  const row = {paziente_id: me.id, esercizio_id: ex, report: rep, creato: new Date().toISOString()};
+  const {error} = await sb.from('sessioni').insert(row);
+  const m = document.getElementById('ovmsg');
+  if (error) {
+    const q = lsGet('tele_pending', []); q.push(row); lsSet('tele_pending', q);
+    if (m) { m.style.color = '#ffb4a9'; m.textContent = 'NON salvato: ' + (error.message || error.code || 'errore'); }
+  } else if (m) { m.style.color = '#9be3c0'; m.textContent = 'Risultato salvato ✓'; }
+}
+async function flush() {
+  if (!me) return;
+  const q = lsGet('tele_pending', []);
+  if (!q.length) return;
+  const resto = [];
+  for (const r of q) {
+    if (r.paziente_id !== me.id) { resto.push(r); continue; }
+    const {error} = await sb.from('sessioni').insert(r);
+    if (error) resto.push(r);
+  }
+  lsSet('tele_pending', resto);
+}
+window.addEventListener('online', flush);
+
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch(() => {}); }
+boot();
+</script>
+</body>
+</html>
